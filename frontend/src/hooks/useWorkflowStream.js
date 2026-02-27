@@ -26,8 +26,8 @@ export function useWorkflowStream() {
       try {
         const data = JSON.parse(e.data);
         setEvents(prev => [...prev, {
-          type: 'REQUEST_START',
-          ...data
+          ...data,
+          eventType: 'REQUEST_START',
         }]);
       } catch (err) {
         console.error('Failed to parse request-start event:', err);
@@ -38,8 +38,8 @@ export function useWorkflowStream() {
       try {
         const data = JSON.parse(e.data);
         setEvents(prev => [...prev, {
-          type: 'WORKFLOW_STEP',
-          ...data
+          ...data,
+          eventType: 'WORKFLOW_STEP',
         }]);
       } catch (err) {
         console.error('Failed to parse workflow-step event:', err);

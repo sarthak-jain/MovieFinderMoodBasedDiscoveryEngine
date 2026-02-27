@@ -40,7 +40,7 @@ function WorkflowPanel({ events, connected }) {
   let currentGroup = null;
 
   for (const event of events) {
-    if (event.type === 'REQUEST_START') {
+    if (event.eventType === 'REQUEST_START') {
       currentGroup = {
         traceId: event.traceId,
         method: event.method,
@@ -49,9 +49,9 @@ function WorkflowPanel({ events, connected }) {
         steps: [],
       };
       groupedEvents.push(currentGroup);
-    } else if (event.type === 'WORKFLOW_STEP' && currentGroup) {
+    } else if (event.eventType === 'WORKFLOW_STEP' && currentGroup) {
       currentGroup.steps.push(event);
-    } else if (event.type === 'WORKFLOW_STEP') {
+    } else if (event.eventType === 'WORKFLOW_STEP') {
       // Step without a request start — create a new implicit group
       if (!currentGroup || currentGroup.traceId !== event.traceId) {
         currentGroup = {
