@@ -8,8 +8,11 @@ import org.neo4j.driver.Session;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import org.neo4j.driver.Values;
+
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api")
@@ -31,6 +34,34 @@ public class SearchController {
 
         SearchResult result = searchService.search(mood, query, page);
         return ResponseEntity.ok(result);
+    }
+
+    @GetMapping("/suggest")
+    public ResponseEntity<List<Map<String, Object>>> suggest(@RequestParam String q) {
+        if (q == null || q.trim().length() < 2) {
+            return ResponseEntity.ok(List.of());
+        }
+
+        List<Map<String, Object>> suggestions = new ArrayList<>();
+        try (Session session = neo4jDriver.session()) {
+            String cypher = """
+                    MATCH (m:Movie)
+                    WHERE toLower(m.title) CONTAINS toLower($q)
+                    RETURN m.title AS title, m.year AS year, id(m) AS id
+                    ORDER BY m.avgRating DESC
+                    LIMIT 8
+                    """;
+            var result = session.run(cypher, Values.value(Map.of("q", q.trim())));
+            while (result.hasNext()) {
+                var record = result.next();
+                suggestions.add(Map.of(
+                        "id", record.get("id").asLong(),
+                        "title", record.get("title").asString(),
+                        "year", record.get("year").isNull() ? "" : record.get("year").asInt()
+                ));
+            }
+        }
+        return ResponseEntity.ok(suggestions);
     }
 
     @GetMapping("/moods")

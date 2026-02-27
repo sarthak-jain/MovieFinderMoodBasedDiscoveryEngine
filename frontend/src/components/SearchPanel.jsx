@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8080/api';
 
@@ -17,6 +17,66 @@ function SearchPanel({ onSearch, loading }) {
   const [moods, setMoods] = useState([]);
   const [selectedMood, setSelectedMood] = useState(null);
   const [query, setQuery] = useState('');
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const debounceRef = useRef(null);
+  const containerRef = useRef(null);
+
+  const fetchSuggestions = useCallback((q) => {
+    if (q.trim().length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    fetch(`${API_BASE}/suggest?q=${encodeURIComponent(q.trim())}`)
+      .then(res => res.json())
+      .then(data => {
+        setSuggestions(data);
+        setShowSuggestions(data.length > 0);
+        setActiveSuggestion(-1);
+      })
+      .catch(() => setSuggestions([]));
+  }, []);
+
+  const handleQueryChange = (e) => {
+    const val = e.target.value;
+    setQuery(val);
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => fetchSuggestions(val), 200);
+  };
+
+  const handleSuggestionClick = (suggestion) => {
+    setQuery(suggestion.title);
+    setShowSuggestions(false);
+    onSearch(selectedMood, suggestion.title);
+  };
+
+  const handleKeyDown = (e) => {
+    if (!showSuggestions || suggestions.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActiveSuggestion(prev => Math.min(prev + 1, suggestions.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActiveSuggestion(prev => Math.max(prev - 1, -1));
+    } else if (e.key === 'Enter' && activeSuggestion >= 0) {
+      e.preventDefault();
+      handleSuggestionClick(suggestions[activeSuggestion]);
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false);
+    }
+  };
+
+  // Close suggestions on outside click
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   useEffect(() => {
     fetch(`${API_BASE}/moods`)
@@ -72,13 +132,36 @@ function SearchPanel({ onSearch, loading }) {
       </div>
 
       <form onSubmit={handleSubmit} style={styles.searchForm}>
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search by title..."
-          style={styles.searchInput}
-        />
+        <div ref={containerRef} style={styles.inputWrapper}>
+          <input
+            type="text"
+            value={query}
+            onChange={handleQueryChange}
+            onKeyDown={handleKeyDown}
+            onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+            placeholder="Search by title..."
+            style={styles.searchInput}
+            autoComplete="off"
+          />
+          {showSuggestions && suggestions.length > 0 && (
+            <div style={styles.suggestionsDropdown}>
+              {suggestions.map((s, i) => (
+                <div
+                  key={s.id}
+                  onClick={() => handleSuggestionClick(s)}
+                  style={{
+                    ...styles.suggestionItem,
+                    ...(i === activeSuggestion ? styles.suggestionItemActive : {}),
+                  }}
+                  onMouseEnter={() => setActiveSuggestion(i)}
+                >
+                  <span style={styles.suggestionTitle}>{s.title}</span>
+                  {s.year && <span style={styles.suggestionYear}>({s.year})</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
         <button type="submit" style={styles.searchButton} disabled={loading}>
           {loading ? 'Searching...' : 'Search'}
         </button>
@@ -139,8 +222,12 @@ const styles = {
     display: 'flex',
     gap: '12px',
   },
-  searchInput: {
+  inputWrapper: {
     flex: 1,
+    position: 'relative',
+  },
+  searchInput: {
+    width: '100%',
     padding: '12px 18px',
     background: '#16213e',
     border: '1px solid #2a2a4a',
@@ -150,6 +237,41 @@ const styles = {
     fontFamily: 'Inter, sans-serif',
     outline: 'none',
     transition: 'border-color 0.2s',
+    boxSizing: 'border-box',
+  },
+  suggestionsDropdown: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    right: 0,
+    marginTop: '4px',
+    background: '#16213e',
+    border: '1px solid #2a2a4a',
+    borderRadius: '10px',
+    overflow: 'hidden',
+    zIndex: 10,
+    boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+  },
+  suggestionItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '10px 16px',
+    cursor: 'pointer',
+    transition: 'background 0.15s',
+  },
+  suggestionItemActive: {
+    background: '#1a2744',
+  },
+  suggestionTitle: {
+    color: '#e0e0e0',
+    fontSize: '0.9rem',
+    fontFamily: 'Inter, sans-serif',
+  },
+  suggestionYear: {
+    color: '#5a6480',
+    fontSize: '0.8rem',
+    fontFamily: 'Inter, sans-serif',
   },
   searchButton: {
     padding: '12px 28px',

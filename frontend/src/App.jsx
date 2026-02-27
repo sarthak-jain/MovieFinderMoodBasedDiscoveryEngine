@@ -59,10 +59,17 @@ function App() {
     setSelectedMovie(null);
   }, []);
 
+  const handleLogoClick = useCallback(() => {
+    setSelectedMovie(null);
+    setMovies([]);
+    setSearchInfo(null);
+    clearEvents();
+  }, [clearEvents]);
+
   return (
     <div className="app">
       <header className="app-header">
-        <h1 className="app-title">MovieFinder</h1>
+        <h1 className="app-title" onClick={handleLogoClick} style={{ cursor: 'pointer' }}>MovieFinder</h1>
         <span className="app-subtitle">Mood-based Discovery Engine</span>
         <div className="connection-status">
           <span className={`status-dot ${connected ? 'connected' : 'disconnected'}`} />
