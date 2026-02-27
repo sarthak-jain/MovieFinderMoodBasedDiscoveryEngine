@@ -1,0 +1,16 @@
+# Production profile — all secrets via environment variables
+spring:
+  neo4j:
+    uri: ${NEO4J_URI}
+    authentication:
+      username: ${NEO4J_USERNAME}
+      password: ${NEO4J_PASSWORD}
+
+  data:
+    redis:
+      url: ${REDIS_URL}   # rediss://default:password@host:port
+      ssl:
+        enabled: true
+
+server:
+  port: 8080
