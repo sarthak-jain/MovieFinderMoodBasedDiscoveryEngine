@@ -8,14 +8,93 @@ import './App.css';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8080/api';
 
+function Pagination({ currentPage, totalResults, pageSize, maxPages, onPageChange }) {
+  const totalPages = Math.min(Math.ceil(totalResults / pageSize), maxPages);
+  if (totalPages <= 1) return null;
+
+  const pages = [];
+  for (let i = 0; i < totalPages; i++) pages.push(i);
+
+  return (
+    <div style={paginationStyles.container}>
+      <button
+        onClick={() => onPageChange(currentPage - 1)}
+        disabled={currentPage === 0}
+        style={{
+          ...paginationStyles.button,
+          ...(currentPage === 0 ? paginationStyles.disabled : {}),
+        }}
+      >
+        Prev
+      </button>
+      {pages.map(p => (
+        <button
+          key={p}
+          onClick={() => onPageChange(p)}
+          style={{
+            ...paginationStyles.button,
+            ...(p === currentPage ? paginationStyles.active : {}),
+          }}
+        >
+          {p + 1}
+        </button>
+      ))}
+      <button
+        onClick={() => onPageChange(currentPage + 1)}
+        disabled={currentPage >= totalPages - 1}
+        style={{
+          ...paginationStyles.button,
+          ...(currentPage >= totalPages - 1 ? paginationStyles.disabled : {}),
+        }}
+      >
+        Next
+      </button>
+    </div>
+  );
+}
+
+const paginationStyles = {
+  container: {
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: '8px',
+    marginTop: '32px',
+    paddingBottom: '24px',
+  },
+  button: {
+    padding: '8px 14px',
+    background: '#16213e',
+    border: '1px solid #2a2a4a',
+    borderRadius: '8px',
+    color: '#e0e0e0',
+    fontSize: '0.85rem',
+    fontWeight: 500,
+    cursor: 'pointer',
+    fontFamily: 'Inter, sans-serif',
+    transition: 'all 0.2s ease',
+  },
+  active: {
+    background: '#6c63ff',
+    borderColor: '#6c63ff',
+    color: '#ffffff',
+  },
+  disabled: {
+    opacity: 0.4,
+    cursor: 'not-allowed',
+  },
+};
+
 function App() {
   const [movies, setMovies] = useState([]);
   const [selectedMovie, setSelectedMovie] = useState(null);
   const [loading, setLoading] = useState(false);
   const [searchInfo, setSearchInfo] = useState(null);
+  const [currentPage, setCurrentPage] = useState(0);
+  const [lastSearch, setLastSearch] = useState({ mood: null, query: null });
   const { events, clearEvents, connected } = useWorkflowStream();
 
-  const handleSearch = useCallback(async (mood, query) => {
+  const doSearch = useCallback(async (mood, query, page) => {
     setLoading(true);
     setSelectedMovie(null);
     clearEvents();
@@ -24,6 +103,7 @@ function App() {
       const params = new URLSearchParams();
       if (mood) params.set('mood', mood);
       if (query) params.set('query', query);
+      params.set('page', page);
 
       const response = await fetch(`${API_BASE}/search?${params}`);
       const data = await response.json();
@@ -42,6 +122,18 @@ function App() {
       setLoading(false);
     }
   }, [clearEvents]);
+
+  const handleSearch = useCallback((mood, query) => {
+    setCurrentPage(0);
+    setLastSearch({ mood, query });
+    doSearch(mood, query, 0);
+  }, [doSearch]);
+
+  const handlePageChange = useCallback((page) => {
+    setCurrentPage(page);
+    doSearch(lastSearch.mood, lastSearch.query, page);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [doSearch, lastSearch]);
 
   const handleMovieSelect = useCallback(async (movie) => {
     clearEvents();
@@ -63,6 +155,8 @@ function App() {
     setSelectedMovie(null);
     setMovies([]);
     setSearchInfo(null);
+    setCurrentPage(0);
+    setLastSearch({ mood: null, query: null });
     clearEvents();
   }, [clearEvents]);
 
@@ -93,6 +187,15 @@ function App() {
                 </div>
               )}
               <MovieGrid movies={movies} onMovieSelect={handleMovieSelect} loading={loading} />
+              {searchInfo && searchInfo.totalResults > 20 && (
+                <Pagination
+                  currentPage={currentPage}
+                  totalResults={searchInfo.totalResults}
+                  pageSize={20}
+                  maxPages={10}
+                  onPageChange={handlePageChange}
+                />
+              )}
             </>
           )}
         </div>
