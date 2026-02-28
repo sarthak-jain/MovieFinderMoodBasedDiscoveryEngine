@@ -80,7 +80,7 @@ function App() {
       <div className="app-layout">
         <div className="main-panel">
           {selectedMovie ? (
-            <MovieDetail movie={selectedMovie} onBack={handleBack} />
+            <MovieDetail movie={selectedMovie} onBack={handleBack} onMovieSelect={handleMovieSelect} />
           ) : (
             <>
               <SearchPanel onSearch={handleSearch} loading={loading} />

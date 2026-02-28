@@ -9,7 +9,7 @@ const PLACEHOLDER_POSTER = 'data:image/svg+xml,' + encodeURIComponent(`
   </svg>
 `);
 
-function MovieDetail({ movie, onBack }) {
+function MovieDetail({ movie, onBack, onMovieSelect }) {
   const [similarMovies, setSimilarMovies] = useState([]);
 
   useEffect(() => {
@@ -115,7 +115,7 @@ function MovieDetail({ movie, onBack }) {
           <h2 style={styles.similarHeading}>Similar Movies</h2>
           <div style={styles.similarGrid}>
             {similarMovies.map(m => (
-              <div key={m.id || m.tmdbId} style={styles.similarCard}>
+              <div key={m.id || m.tmdbId} style={styles.similarCard} onClick={() => onMovieSelect(m)} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && onMovieSelect(m)}>
                 <img
                   src={m.posterPath || PLACEHOLDER_POSTER}
                   alt={m.title}
@@ -272,6 +272,8 @@ const styles = {
     borderRadius: '10px',
     overflow: 'hidden',
     border: '1px solid #2a2a4a',
+    cursor: 'pointer',
+    transition: 'transform 0.2s ease, box-shadow 0.2s ease',
   },
   similarPoster: {
     width: '100%',
