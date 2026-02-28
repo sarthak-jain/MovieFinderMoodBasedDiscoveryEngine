@@ -206,6 +206,8 @@ function App() {
     setSelectedMovie(null);
   }, []);
 
+  const [resetKey, setResetKey] = useState(0);
+
   const handleLogoClick = useCallback(() => {
     setSelectedMovie(null);
     setMovies([]);
@@ -214,6 +216,7 @@ function App() {
     setLastSearch({ mood: null, query: null });
     setAiInterpretation(null);
     setIsAiSearch(false);
+    setResetKey(k => k + 1);
     clearEvents();
   }, [clearEvents]);
 
@@ -234,7 +237,7 @@ function App() {
             <MovieDetail movie={selectedMovie} onBack={handleBack} onMovieSelect={handleMovieSelect} />
           ) : (
             <>
-              <SearchPanel onSearch={handleSearch} loading={loading} />
+              <SearchPanel key={resetKey} onSearch={handleSearch} loading={loading} />
               {aiInterpretation && (
                 <div style={aiStyles.banner}>
                   <span style={aiStyles.label}>AI understood:</span>

@@ -46,12 +46,14 @@ circuit breaker states, and ranking computations -- as they happen.
 
 - Mood-based movie discovery across 8 moods with weighted scoring
 - Full-text typeahead search with Lucene-backed indexes
+- **AI-powered natural language search** via Claude API (e.g., "scary movies for halloween")
 - Graph-based "Similar Movies" recommendations via shared-genre traversal
 - Real-time workflow visualization via Server-Sent Events (SSE)
-- Circuit breaker and rate limiter protecting external TMDb API calls
-- Redis caching with tiered TTLs (5 min search, 24h detail, 7d posters)
+- Circuit breaker and rate limiter protecting external API calls (TMDb + Claude)
+- Redis caching with tiered TTLs (5 min search, 24h detail, 7d posters, 1h AI parse)
 - Bulk ingestion pipeline: TMDb Discover API -> Neo4j with mood scoring
 - AWS production deployment: App Runner + AuraDB + Upstash Redis + CloudFront
+- Custom domain: findmynextmovie.com (Route via CloudFront with ACM SSL)
 
 ### Architecture Diagram
 
@@ -76,7 +78,18 @@ circuit breaker states, and ranking computations -- as they happen.
               | - SIMILAR  |    |   cache     |    | - Credits      |
               |   _TO      |    | - Detail    |    |                |
               |            |    |   cache     |    | Rate: 40/10s   |
-              +------------+    +-------------+    +----------------+
+              +------------+    | - AI parse  |    +----------------+
+                                |   cache     |
+                                +-------------+    +----------------+
+                                                   |  Claude API    |
+                                                   |  (Anthropic)   |
+                                                   |                |
+                                                   | - NL query     |
+                                                   |   parsing      |
+                                                   | - Haiku model  |
+                                                   | - Structured   |
+                                                   |   extraction   |
+                                                   +----------------+
 
 Data Flow (Search Request):
 
@@ -109,9 +122,10 @@ Data Flow (Search Request):
 | Frontend | React 18 SPA | Movie search UI + workflow visualization panel |
 | Backend | Spring Boot 3.2.3 (Java 21) | REST API, SSE streaming, orchestration |
 | Graph DB | Neo4j 5 (AuraDB in prod) | Movie/genre/mood storage, graph traversals, full-text search |
-| Cache | Redis 7 (Upstash in prod) | Search results, movie details, poster URLs |
+| Cache | Redis 7 (Upstash in prod) | Search results, movie details, poster URLs, AI parse cache |
 | External API | TMDb API v3 | Poster images, backdrops, runtime, credits |
-| CDN | S3 + CloudFront | Static frontend hosting |
+| AI/LLM | Claude Haiku (Anthropic API) | Natural language query parsing into structured search parameters |
+| CDN | S3 + CloudFront | Static frontend hosting (findmynextmovie.com) |
 | Container Runtime | AWS App Runner | Auto-scaling backend containers |
 
 ### Why Each Technology Was Chosen
@@ -141,7 +155,7 @@ bulk ingestion, and @EventListener for startup seeding.
 **TMDb API** -- Industry-standard movie metadata API with 600k+ movies, high-quality
 poster images, and a generous free tier (40 requests/10 seconds).
 
-### Request Flow (Search)
+### Request Flow (Standard Search)
 
 ```
 1. [API Gateway]     Route GET /api/search -> SearchService.search()
@@ -153,6 +167,21 @@ poster images, and a generous free tier (40 requests/10 seconds).
 7. [Ranking]         score = moodScore * 0.6 + normalizedRating * 0.4
 8. [Cache Write]     Redis SET "search:cozy::0" TTL 5min
 9. [Response]        200 OK -- 20 results (total: 45ms)
+```
+
+### Request Flow (AI-Powered Search)
+
+```
+1. [API Gateway]      Route POST /api/search/ai -> AiSearchService + SearchService
+2. [AI Query Parser]  Claude Haiku parses "scary movies for halloween"
+                      -> { mood: "dark", genres: ["Horror"], searchTerms: [] }
+3. [Cache Check]      Redis GET "ai-result:dark::horror:0" -> HIT or MISS
+4. [Graph Query]      Genre + mood filtered Cypher (8 query variants)
+5. [External API]     TMDb batch enrichment
+6. [Circuit Breaker]  Check state for both TMDb and Claude APIs
+7. [Ranking]          Weighted scoring on AI-filtered results
+8. [Cache Write]      Redis SET with 5min TTL
+9. [Response]         200 OK -- results + AI interpretation for transparency
 ```
 
 ---
@@ -386,6 +415,40 @@ Response 200:
   "searchTimeMs": 42
 }
 ```
+
+#### AI-Powered Search
+
+```
+POST /api/search/ai
+Content-Type: application/json
+
+Body:
+{
+  "query": "scary movies for halloween",
+  "page": "0"
+}
+
+Response 200:
+{
+  "interpretation": {
+    "mood": "dark",
+    "searchTerms": [],
+    "genres": ["Horror"],
+    "explanation": "Looking for scary/horror movies with a dark halloween feel"
+  },
+  "results": {
+    "movies": [ ... ],    // same format as standard search
+    "totalResults": 42,
+    "page": 0,
+    "searchTimeMs": 850
+  }
+}
+
+Response 503: AI service unavailable (circuit breaker open or API key missing)
+```
+
+The interpretation object is returned for transparency -- the frontend displays what
+the AI understood, so users can refine their query if the parsing was off.
 
 #### Typeahead Suggestions
 
@@ -761,6 +824,72 @@ The search service dynamically builds Cypher based on which parameters are provi
 All variants: SKIP $skip LIMIT $limit (page size = 20)
 ```
 
+### AI-Powered Natural Language Search
+
+Users can toggle AI mode and type natural language queries like "movie with wizards"
+or "romantic comedies from the 90s." The system uses Claude Haiku to parse these into
+structured search parameters.
+
+```
+Architecture:
+
+  User Input: "scary movies for halloween"
+       |
+       v
+  AiSearchService.parseQuery()
+       |
+       +-- Redis cache check: "ai-search:{SHA256(input)}" (1h TTL)
+       |   HIT -> return cached parse
+       |   MISS -> call Claude API
+       |
+       v
+  Claude Haiku API (structured extraction)
+       |
+       +-- System prompt provides:
+       |     - 8 available moods with descriptions
+       |     - 19 available genres
+       |     - Instructions to return JSON only
+       |
+       +-- Response: { mood: "dark", genres: ["Horror"], searchTerms: [], explanation: "..." }
+       |
+       +-- Cache result in Redis (1h TTL)
+       |
+       v
+  SearchService.aiSearch(mood, searchTerms, genres, page)
+       |
+       +-- Builds genre-filtered Cypher (8 query variants)
+       |   based on which parameters are present:
+       |
+       |   mood + query + genres:
+       |     CALL db.index.fulltext.queryNodes(...) YIELD node, score
+       |     MATCH (node)-[r:MATCHES_MOOD]->(mood {name: $mood})
+       |     MATCH (node)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres
+       |
+       |   genres only:
+       |     MATCH (m:Movie)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres
+       |     ORDER BY m.avgRating DESC
+       |
+       |   ... (6 more combinations)
+       |
+       v
+  Results + AI interpretation returned to frontend
+```
+
+**Why Claude Haiku?**
+- Fast (~500-800ms) and cheap (~$0.001 per query) for structured extraction
+- Understands nuance: "wizards" -> Fantasy genre, "feel-good rainy day" -> cozy mood
+- Returns structured JSON matching the app's existing search parameters
+
+**Resilience:**
+- Circuit breaker wraps Claude API calls (same pattern as TMDb)
+- If Claude is down, frontend falls back to regular title search
+- Redis caches AI parse results for 1 hour (same query = instant on repeat)
+
+**Cost model:**
+- Claude Haiku: ~$0.25/1M input tokens, ~$1.25/1M output tokens
+- Average query: ~500 input tokens, ~100 output tokens = ~$0.0003 per query
+- $5 credit supports ~15,000 AI searches
+
 ### Ranking Formula
 
 ```
@@ -875,11 +1004,12 @@ Server applies SKIP (page * 20) LIMIT 20
 | StepType | Color | Icon | When Emitted |
 |----------|-------|------|-------------|
 | API_GATEWAY | Blue | Door | Request routing decision |
+| AI_QUERY_PARSER | Magenta | Brain | Claude API parses natural language query |
 | CACHE_CHECK | Amber | Disk | Redis GET for cached result |
 | CACHE_WRITE | Amber | Disk | Redis SET after computing result |
 | GRAPH_DB_QUERY | Purple | Database | Neo4j Cypher execution |
 | EXTERNAL_API | Light Blue | Globe | TMDb API call |
-| CIRCUIT_BREAKER | Red | Lightning | After each TMDb interaction |
+| CIRCUIT_BREAKER | Red | Lightning | After each TMDb/Claude interaction |
 | RATE_LIMIT | Orange | Timer | After each TMDb interaction |
 | RANKING | Green | Chart | After scoring algorithm runs |
 | RESPONSE | Green | Check | Final response sent |
@@ -970,8 +1100,12 @@ Environment Variables (App Runner):
   NEO4J_PASSWORD    = (secret)
   REDIS_URL         = rediss://default:xxxxx@xxxxx.upstash.io:6379
   TMDB_API_KEY      = (secret)
-  CORS_ORIGINS      = https://d1234abcdef.cloudfront.net
+  ANTHROPIC_API_KEY = (secret)
+  CORS_ORIGINS      = https://findmynextmovie.com,https://www.findmynextmovie.com,https://d1234abcdef.cloudfront.net
   SPRING_PROFILES_ACTIVE = prod
+
+Custom Domain:
+  findmynextmovie.com -> CloudFront (ACM SSL certificate, ALIAS record via Porkbun)
 ```
 
 ### Component Choices
@@ -981,7 +1115,8 @@ Environment Variables (App Runner):
 | Backend hosting | AWS App Runner | Managed container hosting with auto-scaling. No ECS cluster or load balancer configuration needed. Builds from source or ECR image. |
 | Graph database | Neo4j AuraDB (Free) | Managed Neo4j 5 with 2GB RAM, 4GB storage. Handles 10k movies with room for growth. Automatic backups. |
 | Cache | Upstash Redis | Serverless Redis with TLS. Pay-per-request pricing for low-traffic demo. No server to manage. |
-| Frontend CDN | S3 + CloudFront | Standard static hosting. CloudFront provides HTTPS, edge caching, and global distribution. |
+| AI/LLM | Anthropic Claude Haiku | Fast, cheap structured extraction. Parses natural language queries into mood/genre/title parameters. ~$0.0003 per query. |
+| Frontend CDN | S3 + CloudFront | Static hosting with custom domain (findmynextmovie.com). CloudFront provides HTTPS, edge caching, and global distribution. |
 
 ### Production Profile
 
@@ -1087,6 +1222,7 @@ Scaled (Production):
 |-----------|--------------------|-------------------|
 | Mood search (20 results) | 30-80ms | 2-5ms |
 | Title search (full-text) | 15-40ms | 2-5ms |
+| AI search (NL query) | 800-1500ms (Claude + graph) | 30-80ms (parse cached) |
 | Movie detail | 50-200ms (TMDb enrichment) | 2-5ms |
 | Similar movies | 20-60ms | 2-5ms |
 | Typeahead suggestion | 5-15ms | N/A (no cache) |
@@ -1097,6 +1233,8 @@ Scaled (Production):
 | Cache Tier | TTL | Expected Hit Rate |
 |-----------|-----|-------------------|
 | Search results | 5 min | 40-60% (popular moods) |
+| AI query parse | 1 hour | 60-80% (repeated NL queries) |
+| AI search results | 5 min | 40-60% (same as standard) |
 | Movie details | 24 hours | 70-85% (frequently viewed) |
 | Poster URLs | 7 days | 85-95% (stable URLs) |
 | Similar movies | 1 hour | 50-70% |
@@ -1147,6 +1285,18 @@ Cache reduces ongoing API calls by ~80% after warm-up
 > breaker and rate limiter. Results are ranked (60% mood, 40% rating), cached for
 > 5 minutes, and returned. Throughout, each step emits an SSE event to the workflow
 > panel.
+
+**"How does the AI search work?"**
+> When the user toggles AI mode and types a natural language query like "scary movies
+> for halloween," the request goes to a separate POST endpoint. First, we check Redis
+> for a cached parse of that exact query (SHA-256 hashed key, 1h TTL). On miss, we
+> call Claude Haiku with a structured prompt that lists all available moods and genres,
+> asking it to return JSON with mood, genres, searchTerms, and an explanation. The
+> parsed result is cached, then fed into a genre-filtered Cypher query (8 variants
+> depending on which parameters Claude extracted). The response includes both the
+> search results and the AI's interpretation, so users can see what the AI understood
+> and refine their query. The whole pipeline is wrapped in a circuit breaker -- if
+> Claude is down, the frontend falls back to regular title search transparently.
 
 **"Why Neo4j over PostgreSQL?"**
 > The core data model is relationships: movies connect to genres, moods, and other

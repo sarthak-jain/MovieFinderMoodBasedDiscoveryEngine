@@ -102,7 +102,10 @@ function SearchPanel({ onSearch, loading }) {
   const handleMoodClick = (moodName) => {
     const newMood = selectedMood === moodName ? null : moodName;
     setSelectedMood(newMood);
-    onSearch(newMood, query, false, null);
+    setQuery('');
+    setSuggestions([]);
+    setShowSuggestions(false);
+    onSearch(newMood, '', false, null);
   };
 
   const handleSubmit = (e) => {
