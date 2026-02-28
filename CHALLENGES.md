@@ -257,6 +257,135 @@ Added debounced typeahead search that triggers automatically as the user types (
 
 ---
 
+## 11. Anthropic SDK Version Not Found on Maven Central
+
+**Challenge:**
+When adding the Anthropic Java SDK dependency for Claude API integration, the initial version specified (`1.5.0`) did not exist on Maven Central, causing the Maven build to fail with a dependency resolution error.
+
+**Root Cause:**
+The Anthropic Java SDK version numbering does not follow a simple sequential pattern. Version `1.5.0` was assumed to exist based on typical versioning conventions, but the actual latest version on Maven Central was `2.15.0`. The SDK had gone through major version bumps that were not obvious without checking the repository.
+
+**Solution:**
+Searched Maven Central for the actual available versions of `com.anthropic:anthropic-java` and found the correct latest version `2.15.0`. Updated the `pom.xml` dependency accordingly.
+
+**File changed:**
+- `pom.xml` -- corrected Anthropic SDK version from `1.5.0` to `2.15.0`
+
+---
+
+## 12. Neo4j Aura Cypher Aggregation: `ftScore` Out of Scope
+
+**Challenge:**
+After deploying to Neo4j AuraDB, all full-text search queries that also used `collect()` for genre aggregation started failing with: `"In a WITH/RETURN with DISTINCT or an aggregation, it is not possible to access variables declared before the WITH/RETURN: ftScore"`.
+
+**Root Cause:**
+Neo4j AuraDB enforces stricter Cypher scoping rules than the local Docker Neo4j instance. When a `RETURN` clause contains an aggregation function like `collect(DISTINCT g)`, all non-aggregated variables must be explicitly carried through a `WITH` clause. The original queries yielded `ftScore` from the full-text search but then used `collect()` in the same `RETURN` without first isolating `ftScore` in a `WITH`:
+
+```cypher
+-- BROKEN on AuraDB:
+CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query)
+YIELD node AS m, score AS ftScore
+OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre)
+RETURN m, collect(DISTINCT g) AS genres, null AS moodScore
+ORDER BY ftScore DESC
+```
+
+The `ftScore` variable was declared before the aggregation context and could not be accessed in the `ORDER BY`.
+
+**Solution:**
+Added explicit `WITH` clauses to carry `ftScore` through to the aggregation step, and included `ftScore` in the `RETURN` clause so it survives the aggregation context:
+
+```cypher
+-- FIXED:
+CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query)
+YIELD node AS m, score AS ftScore
+WITH m, ftScore
+OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre)
+RETURN m, collect(DISTINCT g) AS genres, null AS moodScore, ftScore
+ORDER BY ftScore DESC
+```
+
+This fix was applied to all 6 full-text search query variants (both standard `buildCypherQuery` and AI-powered `buildAiCypherQuery`).
+
+**Files changed:**
+- `src/main/java/com/moviefinder/service/SearchService.java` -- added `WITH` clauses and `ftScore` to `RETURN` in all full-text query variants
+
+**Commit:** `864fcf4 Fix Cypher aggregation bug on Neo4j Aura and update AI toggle icon`
+
+---
+
+## 13. Claude API Credit Balance: Circuit Breaker Trips on Zero Credits
+
+**Challenge:**
+After deploying the AI search feature, every AI search request returned a 503 error. The backend logs showed `"Your credit balance is too low to access the Anthropic API"` and the circuit breaker quickly tripped to OPEN state after 3 consecutive failures.
+
+**Root Cause:**
+The Anthropic API uses a prepaid credit system separate from the Claude.ai consumer subscription. The API key had been created but had zero credits loaded. The API rejects all requests with a 400-level error when the account balance is insufficient, which the circuit breaker correctly interpreted as failures.
+
+**Solution:**
+Purchased $5 in API credits on the Anthropic console (console.anthropic.com). After credits were loaded, the circuit breaker recovered on the next HALF_OPEN attempt and AI search started working. The circuit breaker pattern proved its value here -- it prevented hammering a failing API and auto-recovered once the underlying issue was resolved.
+
+**Lesson learned:**
+Anthropic API billing is completely separate from Claude.ai subscriptions. API keys need prepaid credits loaded via the developer console.
+
+---
+
+## 14. Production Frontend Hitting localhost API
+
+**Challenge:**
+After deploying the frontend to S3 + CloudFront, the site showed "Disconnected" and no searches worked, even though the backend was running correctly on App Runner.
+
+**Root Cause:**
+The React frontend was built with `npm run build` without setting the `REACT_APP_API_URL` environment variable. Create React App embeds environment variables at build time, not runtime. Without the variable, the code fell back to the default:
+
+```javascript
+const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8080/api';
+```
+
+The production build was making all API calls to `localhost:8080`, which obviously doesn't exist in the user's browser.
+
+**Solution:**
+Rebuilt the frontend with the correct API URL:
+
+```bash
+REACT_APP_API_URL=https://dq3pirzf9x.us-east-2.awsapprunner.com/api npm run build
+```
+
+Also created a `frontend/.env.production` file so future builds automatically pick up the production URL without needing to pass it manually.
+
+**Files changed:**
+- `frontend/.env.production` -- contains `REACT_APP_API_URL` for production builds
+
+---
+
+## 15. CORS Blocking Custom Domain After DNS Setup
+
+**Challenge:**
+After configuring the custom domain `findmynextmovie.com` with CloudFront (ACM certificate + Porkbun DNS), the site loaded but showed "Disconnected" and all API calls failed. The CloudFront URL (`d1joceflwkloqo.cloudfront.net`) continued to work fine.
+
+**Root Cause:**
+The App Runner `CORS_ORIGINS` environment variable only listed the CloudFront domain and localhost:
+
+```
+CORS_ORIGINS=https://d1joceflwkloqo.cloudfront.net,http://localhost:3000
+```
+
+When the browser accessed the site via `findmynextmovie.com`, the `Origin` header in API requests was `https://findmynextmovie.com`, which the backend rejected as an unauthorized origin.
+
+**Solution:**
+Updated the `CORS_ORIGINS` environment variable on App Runner to include all three domains:
+
+```
+CORS_ORIGINS=https://d1joceflwkloqo.cloudfront.net,https://findmynextmovie.com,https://www.findmynextmovie.com,http://localhost:3000
+```
+
+This required an App Runner service update and redeployment.
+
+**Lesson learned:**
+When adding a custom domain to a CDN-fronted app, remember to update CORS on the API backend. The CDN domain and custom domain are different origins from the browser's perspective.
+
+---
+
 ## Summary
 
 | # | Challenge | Category | Impact |
@@ -271,3 +400,8 @@ Added debounced typeahead search that triggers automatically as the user types (
 | 8 | Cypher variable scope error | Backend/Neo4j | SIMILAR_TO computation fails |
 | 9 | AuraDB transaction memory | Backend/Neo4j | SIMILAR_TO computation OOM on cloud |
 | 10 | No typeahead or home reset | Frontend/UX | Poor search experience |
+| 11 | Anthropic SDK version wrong | Backend/Dependency | Build blocked |
+| 12 | AuraDB Cypher aggregation scope | Backend/Neo4j | All full-text searches fail on cloud |
+| 13 | Claude API zero credits | Backend/AI | AI search 503, circuit breaker open |
+| 14 | Frontend hitting localhost | Frontend/Deployment | Entire production site non-functional |
+| 15 | CORS blocking custom domain | Backend/Config | Custom domain site non-functional |
