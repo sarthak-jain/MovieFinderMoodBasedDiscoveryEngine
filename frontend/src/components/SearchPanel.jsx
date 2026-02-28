@@ -143,7 +143,7 @@ function SearchPanel({ onSearch, loading }) {
           }}
           title={aiMode ? 'AI search enabled — describe what you want' : 'Click to enable AI-powered search'}
         >
-          {'\u{1F9E0}'} AI
+          {'\u{2728}'} AI
         </button>
         <div ref={containerRef} style={styles.inputWrapper}>
           <input

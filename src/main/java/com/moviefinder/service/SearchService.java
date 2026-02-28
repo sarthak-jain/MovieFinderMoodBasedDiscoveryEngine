@@ -232,22 +232,25 @@ public class SearchService {
             cypher.append("YIELD node AS m, score AS ftScore ");
             cypher.append("MATCH (m)-[r:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
             cypher.append("MATCH (m)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres ");
+            cypher.append("WITH m, ftScore, r.score AS moodScore ");
             cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g2:Genre) ");
-            cypher.append("RETURN m, collect(DISTINCT g2) AS genres, r.score AS moodScore ");
-            cypher.append("ORDER BY ftScore DESC, r.score DESC ");
+            cypher.append("RETURN m, collect(DISTINCT g2) AS genres, moodScore, ftScore ");
+            cypher.append("ORDER BY ftScore DESC, moodScore DESC ");
         } else if (hasQuery && hasMood) {
             cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
             cypher.append("YIELD node AS m, score AS ftScore ");
             cypher.append("MATCH (m)-[r:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
+            cypher.append("WITH m, ftScore, r.score AS moodScore ");
             cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
-            cypher.append("RETURN m, collect(DISTINCT g) AS genres, r.score AS moodScore ");
-            cypher.append("ORDER BY ftScore DESC, r.score DESC ");
+            cypher.append("RETURN m, collect(DISTINCT g) AS genres, moodScore, ftScore ");
+            cypher.append("ORDER BY ftScore DESC, moodScore DESC ");
         } else if (hasQuery && hasGenres) {
             cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
             cypher.append("YIELD node AS m, score AS ftScore ");
             cypher.append("MATCH (m)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres ");
+            cypher.append("WITH m, ftScore ");
             cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g2:Genre) ");
-            cypher.append("RETURN m, collect(DISTINCT g2) AS genres, null AS moodScore ");
+            cypher.append("RETURN m, collect(DISTINCT g2) AS genres, null AS moodScore, ftScore ");
             cypher.append("ORDER BY ftScore DESC, m.avgRating DESC ");
         } else if (hasMood && hasGenres) {
             cypher.append("MATCH (m:Movie)-[r:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
@@ -258,8 +261,9 @@ public class SearchService {
         } else if (hasQuery) {
             cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
             cypher.append("YIELD node AS m, score AS ftScore ");
+            cypher.append("WITH m, ftScore ");
             cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
-            cypher.append("RETURN m, collect(DISTINCT g) AS genres, null AS moodScore ");
+            cypher.append("RETURN m, collect(DISTINCT g) AS genres, null AS moodScore, ftScore ");
             cypher.append("ORDER BY ftScore DESC, m.avgRating DESC ");
         } else if (hasGenres) {
             cypher.append("MATCH (m:Movie)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres ");
@@ -342,15 +346,17 @@ public class SearchService {
             cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
             cypher.append("YIELD node AS m, score AS ftScore ");
             cypher.append("MATCH (m)-[r:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
+            cypher.append("WITH m, ftScore, r.score AS moodScore ");
             cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
-            cypher.append("RETURN m, collect(DISTINCT g) AS genres, r.score AS moodScore ");
-            cypher.append("ORDER BY ftScore DESC, r.score DESC ");
+            cypher.append("RETURN m, collect(DISTINCT g) AS genres, moodScore, ftScore ");
+            cypher.append("ORDER BY ftScore DESC, moodScore DESC ");
         } else if (hasQuery) {
             // Full-text search only
             cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
             cypher.append("YIELD node AS m, score AS ftScore ");
+            cypher.append("WITH m, ftScore ");
             cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
-            cypher.append("RETURN m, collect(DISTINCT g) AS genres, null AS moodScore ");
+            cypher.append("RETURN m, collect(DISTINCT g) AS genres, null AS moodScore, ftScore ");
             cypher.append("ORDER BY ftScore DESC, m.avgRating DESC ");
         } else if (hasMood) {
             // Mood-only search
