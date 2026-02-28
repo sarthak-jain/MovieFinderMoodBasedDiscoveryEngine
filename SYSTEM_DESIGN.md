@@ -1069,8 +1069,9 @@ Key decisions:
 ### AWS Architecture
 
 ```
-                                    AWS Cloud
+                                    AWS Cloud (us-west-2, Oregon)
 +------------------------------------------------------------------+
+|  All backend services co-located in us-west-2 for low latency    |
 |                                                                  |
 |  +------------------+         +---------------------------+      |
 |  |  S3 Bucket       |         |  App Runner               |      |
@@ -1079,20 +1080,21 @@ Key decisions:
 |           |                   |  Spring Boot 3.2.3        |      |
 |  +--------v---------+         |  Java 21                  |      |
 |  |  CloudFront CDN  |         |  Port 8080                |      |
-|  |  (HTTPS, caching)|         |  Auto-scaling: 1-25       |      |
-|  |  d1234.cf.net    |         |  vCPU: 1, RAM: 2GB        |      |
+|  |  (Global edge)   |         |  Auto-scaling: 1-25       |      |
+|  |  HTTPS + caching |         |  vCPU: 1, RAM: 2GB        |      |
 |  +------------------+         +------+------+------+------+      |
 |                                      |      |      |             |
 |                               +------v-+  +-v------v------+     |
 |                               |Upstash |  | Neo4j AuraDB  |     |
 |                               |Redis   |  | (managed)     |     |
-|                               |        |  |               |     |
+|                               |Oregon  |  |               |     |
 |                               |Server- |  | 2GB RAM       |     |
 |                               |less    |  | 4GB storage   |     |
 |                               |TLS     |  | Neo4j 5       |     |
 |                               +--------+  +---------------+     |
 |                                                                  |
 +------------------------------------------------------------------+
+Uptime: UptimeRobot pings /api/health every 5 min (keeps container warm)
 
 Environment Variables (App Runner):
   NEO4J_URI         = neo4j+s://xxxxx.databases.neo4j.io
@@ -1112,9 +1114,9 @@ Custom Domain:
 
 | Component | Service | Why |
 |-----------|---------|-----|
-| Backend hosting | AWS App Runner | Managed container hosting with auto-scaling. No ECS cluster or load balancer configuration needed. Builds from source or ECR image. |
-| Graph database | Neo4j AuraDB (Free) | Managed Neo4j 5 with 2GB RAM, 4GB storage. Handles 10k movies with room for growth. Automatic backups. |
-| Cache | Upstash Redis | Serverless Redis with TLS. Pay-per-request pricing for low-traffic demo. No server to manage. |
+| Backend hosting | AWS App Runner (us-west-2) | Managed container hosting with auto-scaling. Co-located in Oregon with Neo4j and Redis for <5ms inter-service latency. UptimeRobot keeps container warm. |
+| Graph database | Neo4j AuraDB (Free, us-west-2) | Managed Neo4j 5 with 2GB RAM, 4GB storage. Handles 10k movies with room for growth. Automatic backups. |
+| Cache | Upstash Redis (us-west-2) | Serverless Redis with TLS in Oregon. Co-located with App Runner and Neo4j. Pay-per-request pricing for low-traffic demo. |
 | AI/LLM | Anthropic Claude Haiku | Fast, cheap structured extraction. Parses natural language queries into mood/genre/title parameters. ~$0.0003 per query. |
 | Frontend CDN | S3 + CloudFront | Static hosting with custom domain (findmynextmovie.com). CloudFront provides HTTPS, edge caching, and global distribution. |
 
@@ -1128,12 +1130,24 @@ spring:
     authentication:
       username: ${NEO4J_USERNAME}
       password: ${NEO4J_PASSWORD}
+    pool:
+      max-connection-lifetime: 30m       # recycle before proxies kill idle connections
+      idle-time-before-connection-test: 1m # validate stale connections before reuse
+      connection-acquisition-timeout: 30s
+      max-connection-pool-size: 50
+      log-leaked-sessions: true
   data:
     redis:
       url: ${REDIS_URL}               # rediss:// (TLS)
       ssl:
         enabled: true
 ```
+
+**Connection pool tuning** prevents `SessionExpiredException` errors caused by
+stale TCP connections. When App Runner scales down and back up, or during idle
+periods, intermediate load balancers may silently drop connections.
+`idle-time-before-connection-test` ensures dead connections are detected and
+replaced before use.
 
 ---
 
@@ -1217,6 +1231,9 @@ Scaled (Production):
 | Seed movies (startup) | 30 (hardcoded with curated scores) |
 
 ### Latency Estimates
+
+All services co-located in us-west-2 (Oregon). Inter-service latency <5ms.
+Before region co-location, cross-country Neo4j queries added ~250-300ms overhead.
 
 | Operation | Cold (cache miss) | Warm (cache hit) |
 |-----------|--------------------|-------------------|

@@ -386,6 +386,52 @@ When adding a custom domain to a CDN-fronted app, remember to update CORS on the
 
 ---
 
+## 16. Cross-Region Latency: App Runner and Neo4j in Different AWS Regions
+
+**Challenge:**
+After deployment, every search request was slow — 400-600ms for cached results, 1-2 seconds for uncached queries. The site felt sluggish even with Redis caching in place.
+
+**Root Cause:**
+AuraDB Free tier placed the Neo4j database in **Oregon (us-west-2)**, while the App Runner backend was deployed in **Ohio (us-east-2)** and Upstash Redis was in **Virginia (us-east-1)**. Every database query paid ~60-80ms of cross-country network latency per round trip, and Cypher queries often involve multiple exchanges. Server-side `searchTimeMs` for a Neo4j query was **253-313ms** due to the geographic distance.
+
+**Solution:**
+Migrated the entire backend infrastructure to us-west-2 to co-locate with Neo4j AuraDB:
+
+1. Created new ECR repository in us-west-2 and pushed the Docker image
+2. Created new App Runner service in us-west-2 with all environment variables
+3. Created new Upstash Redis instance in us-west-2 (Oregon) to replace the Virginia instance
+4. Updated `frontend/.env.production` with the new API URL and redeployed to S3/CloudFront
+5. Deleted the old us-east-2 App Runner service
+
+Server-side Neo4j query latency dropped from **~300ms to ~30ms** — a 10x improvement.
+
+**Additional fix — connection pool tuning:**
+During investigation, discovered that Neo4j driver connections were going stale during App Runner idle periods, causing `SessionExpiredException: Server is no longer available` errors. Added connection pool settings to `application-prod.yml`:
+
+```yaml
+spring:
+  neo4j:
+    pool:
+      max-connection-lifetime: 30m
+      idle-time-before-connection-test: 1m
+      connection-acquisition-timeout: 30s
+      max-connection-pool-size: 50
+      log-leaked-sessions: true
+```
+
+Also set up UptimeRobot (free tier) to ping the health endpoint every 5 minutes, keeping the App Runner container warm and preventing cold starts.
+
+**Files changed:**
+- `frontend/.env.production` — updated API URL to us-west-2 App Runner
+- `src/main/resources/application-prod.yml` — added Neo4j connection pool tuning
+
+**Commit:** `335958c Migrate App Runner to us-west-2 for Neo4j co-location and add connection pool tuning`
+
+**Lesson learned:**
+AuraDB Free tier does not let you choose the region — always check where it lands and co-locate your compute accordingly. Also, managed database connections over the internet need pool tuning (idle-time-before-connection-test, max-connection-lifetime) to prevent stale connections from intermediate load balancers and proxies.
+
+---
+
 ## Summary
 
 | # | Challenge | Category | Impact |
@@ -405,3 +451,4 @@ When adding a custom domain to a CDN-fronted app, remember to update CORS on the
 | 13 | Claude API zero credits | Backend/AI | AI search 503, circuit breaker open |
 | 14 | Frontend hitting localhost | Frontend/Deployment | Entire production site non-functional |
 | 15 | CORS blocking custom domain | Backend/Config | Custom domain site non-functional |
+| 16 | Cross-region latency | Infrastructure/AWS | 300ms+ DB queries, sluggish UX |
