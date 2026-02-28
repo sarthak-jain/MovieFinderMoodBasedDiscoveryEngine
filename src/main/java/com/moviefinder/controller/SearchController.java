@@ -1,8 +1,11 @@
 package com.moviefinder.controller;
 
+import com.moviefinder.model.AiSearchResponse;
 import com.moviefinder.model.Mood;
 import com.moviefinder.model.SearchResult;
+import com.moviefinder.service.AiSearchService;
 import com.moviefinder.service.SearchService;
+import com.moviefinder.workflow.WorkflowTracer;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.Session;
 import org.springframework.http.ResponseEntity;
@@ -19,10 +22,15 @@ import java.util.Map;
 public class SearchController {
 
     private final SearchService searchService;
+    private final AiSearchService aiSearchService;
+    private final WorkflowTracer workflowTracer;
     private final Driver neo4jDriver;
 
-    public SearchController(SearchService searchService, Driver neo4jDriver) {
+    public SearchController(SearchService searchService, AiSearchService aiSearchService,
+                            WorkflowTracer workflowTracer, Driver neo4jDriver) {
         this.searchService = searchService;
+        this.aiSearchService = aiSearchService;
+        this.workflowTracer = workflowTracer;
         this.neo4jDriver = neo4jDriver;
     }
 
@@ -34,6 +42,45 @@ public class SearchController {
 
         SearchResult result = searchService.search(mood, query, page);
         return ResponseEntity.ok(result);
+    }
+
+    @PostMapping("/search/ai")
+    public ResponseEntity<AiSearchResponse> aiSearch(@RequestBody Map<String, String> body) {
+        String query = body.get("query");
+        int page = 0;
+        if (body.containsKey("page")) {
+            try { page = Integer.parseInt(body.get("page")); } catch (NumberFormatException ignored) {}
+        }
+
+        if (query == null || query.isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        if (!aiSearchService.isEnabled()) {
+            return ResponseEntity.status(503).build();
+        }
+
+        WorkflowTracer.Trace trace = workflowTracer.startTrace("POST", "/api/search/ai?query=" + query);
+        trace.emitApiGateway("Routing POST /api/search/ai → AiSearchService + SearchService");
+
+        // Call Claude to parse the query
+        long aiStart = System.nanoTime();
+        AiSearchService.AiSearchResult parsed = aiSearchService.parseQuery(query);
+        long aiDuration = (System.nanoTime() - aiStart) / 1_000_000;
+
+        if (parsed == null) {
+            trace.emitError("AI Query Parser", "Claude API unavailable — circuit breaker open or API key missing", aiDuration);
+            trace.emitResponse(503, 0);
+            return ResponseEntity.status(503).build();
+        }
+
+        trace.emitAiQueryParser(query, parsed.toString(), aiDuration);
+
+        // Execute the parsed search
+        SearchResult results = searchService.aiSearch(
+                parsed.getMood(), parsed.getSearchTerms(), parsed.getGenres(), page, trace);
+
+        return ResponseEntity.ok(new AiSearchResponse(parsed, results));
     }
 
     @GetMapping("/suggest")

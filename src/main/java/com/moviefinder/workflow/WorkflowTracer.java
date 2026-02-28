@@ -51,6 +51,10 @@ public class WorkflowTracer {
             emit(WorkflowStep.apiGateway(traceId, nextStep(), route, duration));
         }
 
+        public void emitAiQueryParser(String input, String parsedOutput, long durationMs) {
+            emit(WorkflowStep.aiQueryParser(traceId, nextStep(), input, parsedOutput, durationMs));
+        }
+
         public void emitCacheCheck(String key, WorkflowStep.CacheStatus status, long durationMs) {
             emit(WorkflowStep.cacheCheck(traceId, nextStep(), key, status, durationMs));
         }

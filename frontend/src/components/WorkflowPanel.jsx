@@ -2,6 +2,7 @@ import React, { useRef, useEffect } from 'react';
 
 const TYPE_COLORS = {
   API_GATEWAY: '#40c4ff',
+  AI_QUERY_PARSER: '#e040fb',
   CACHE_CHECK: '#ffab00',
   CACHE_WRITE: '#ffab00',
   GRAPH_DB_QUERY: '#ab47bc',
@@ -15,6 +16,7 @@ const TYPE_COLORS = {
 
 const TYPE_ICONS = {
   API_GATEWAY: '\u{1F6AA}',
+  AI_QUERY_PARSER: '\u{1F9E0}',
   CACHE_CHECK: '\u{1F4BE}',
   CACHE_WRITE: '\u{1F4BE}',
   GRAPH_DB_QUERY: '\u{1F5C3}\u{FE0F}',
@@ -80,6 +82,7 @@ function WorkflowPanel({ events, connected }) {
       <div style={styles.legend}>
         {Object.entries({
           'Gateway': '#40c4ff',
+          'AI Parser': '#e040fb',
           'Cache': '#ffab00',
           'Graph DB': '#ab47bc',
           'External API': '#42a5f5',

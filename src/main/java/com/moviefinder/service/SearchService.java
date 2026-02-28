@@ -132,6 +132,198 @@ public class SearchService {
         return searchResult;
     }
 
+    @SuppressWarnings("unchecked")
+    public SearchResult aiSearch(String mood, List<String> searchTerms, List<String> genres, int page,
+                                 WorkflowTracer.Trace trace) {
+        // Step: Cache check
+        String cacheKey = buildAiCacheKey(mood, searchTerms, genres, page);
+        long cacheStart = System.nanoTime();
+        try {
+            Object cached = redisTemplate.opsForValue().get(cacheKey);
+            long cacheDuration = (System.nanoTime() - cacheStart) / 1_000_000;
+            if (cached != null) {
+                trace.emitCacheCheck(cacheKey, WorkflowStep.CacheStatus.HIT, cacheDuration);
+                SearchResult result = convertCachedResult(cached);
+                trace.emitResponse(200, result.getMovies().size());
+                return result;
+            }
+            trace.emitCacheCheck(cacheKey, WorkflowStep.CacheStatus.MISS, cacheDuration);
+        } catch (Exception e) {
+            long cacheDuration = (System.nanoTime() - cacheStart) / 1_000_000;
+            trace.emitCacheCheck(cacheKey, WorkflowStep.CacheStatus.MISS, cacheDuration);
+            log.warn("Redis cache check failed: {}", e.getMessage());
+        }
+
+        // Step: Graph DB query
+        long dbStart = System.nanoTime();
+        boolean hasMood = mood != null && !mood.isEmpty();
+        boolean hasQuery = searchTerms != null && !searchTerms.isEmpty();
+        boolean hasGenres = genres != null && !genres.isEmpty();
+
+        // Build the combined query string for full-text search
+        String queryString = hasQuery ? String.join(" ", searchTerms) + "*" : null;
+
+        String cypherQuery = buildAiCypherQuery(hasMood, hasQuery, hasGenres);
+        String countQuery = buildAiCountQuery(hasMood, hasQuery, hasGenres);
+
+        List<Movie> movies;
+        int totalResults;
+
+        try (Session session = neo4jDriver.session()) {
+            Map<String, Object> params = new HashMap<>();
+            params.put("skip", page * PAGE_SIZE);
+            params.put("limit", PAGE_SIZE);
+            if (hasMood) params.put("mood", mood.toLowerCase());
+            if (hasQuery) params.put("query", queryString);
+            if (hasGenres) params.put("genres", genres);
+
+            var result = session.run(cypherQuery, Values.value(params));
+            movies = new ArrayList<>();
+            while (result.hasNext()) {
+                Record record = result.next();
+                movies.add(mapRecordToMovie(record));
+            }
+
+            var countResult = session.run(countQuery, Values.value(params));
+            totalResults = countResult.hasNext() ? countResult.next().get("count").asInt() : movies.size();
+        }
+
+        long dbDuration = (System.nanoTime() - dbStart) / 1_000_000;
+        String graphDetail = String.format("AI-powered Cypher: genre+mood filtered traversal — returned %d movies", movies.size());
+        trace.emitGraphQuery(graphDetail, cypherQuery, movies.size(), dbDuration);
+
+        // Enrich with TMDb metadata
+        long enrichStart = System.nanoTime();
+        MetadataService.EnrichmentStats stats = metadataService.enrichMovies(movies);
+        long enrichDuration = (System.nanoTime() - enrichStart) / 1_000_000;
+        trace.emitExternalApi("TMDb",
+                String.format("TMDb API v3 batch enrichment for %d movies", movies.size()),
+                stats.cacheHits(), stats.apiCalls(), enrichDuration);
+
+        trace.emitCircuitBreaker(metadataService.getCircuitBreakerState().name(), 0);
+        trace.emitRateLimit(metadataService.getRateLimiterRemaining(), 30);
+
+        // Ranking
+        long rankStart = System.nanoTime();
+        rankMovies(movies, mood);
+        long rankDuration = (System.nanoTime() - rankStart) / 1_000_000;
+        trace.emitRanking(String.format("Weighted scoring on %d AI-filtered results", movies.size()), rankDuration);
+
+        // Cache
+        SearchResult searchResult = new SearchResult(movies, totalResults, page, mood, null, trace.elapsedMs());
+        long cacheWriteStart = System.nanoTime();
+        try {
+            redisTemplate.opsForValue().set(cacheKey, searchResult, 5, TimeUnit.MINUTES);
+            long cacheWriteDuration = (System.nanoTime() - cacheWriteStart) / 1_000_000;
+            trace.emitCacheWrite(cacheKey, "5min", cacheWriteDuration);
+        } catch (Exception e) {
+            log.warn("Redis cache write failed: {}", e.getMessage());
+        }
+
+        trace.emitResponse(200, movies.size());
+        return searchResult;
+    }
+
+    private String buildAiCypherQuery(boolean hasMood, boolean hasQuery, boolean hasGenres) {
+        StringBuilder cypher = new StringBuilder();
+
+        if (hasQuery && hasMood && hasGenres) {
+            cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
+            cypher.append("YIELD node AS m, score AS ftScore ");
+            cypher.append("MATCH (m)-[r:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
+            cypher.append("MATCH (m)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres ");
+            cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g2:Genre) ");
+            cypher.append("RETURN m, collect(DISTINCT g2) AS genres, r.score AS moodScore ");
+            cypher.append("ORDER BY ftScore DESC, r.score DESC ");
+        } else if (hasQuery && hasMood) {
+            cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
+            cypher.append("YIELD node AS m, score AS ftScore ");
+            cypher.append("MATCH (m)-[r:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
+            cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
+            cypher.append("RETURN m, collect(DISTINCT g) AS genres, r.score AS moodScore ");
+            cypher.append("ORDER BY ftScore DESC, r.score DESC ");
+        } else if (hasQuery && hasGenres) {
+            cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
+            cypher.append("YIELD node AS m, score AS ftScore ");
+            cypher.append("MATCH (m)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres ");
+            cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g2:Genre) ");
+            cypher.append("RETURN m, collect(DISTINCT g2) AS genres, null AS moodScore ");
+            cypher.append("ORDER BY ftScore DESC, m.avgRating DESC ");
+        } else if (hasMood && hasGenres) {
+            cypher.append("MATCH (m:Movie)-[r:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
+            cypher.append("MATCH (m)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres ");
+            cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g2:Genre) ");
+            cypher.append("RETURN m, collect(DISTINCT g2) AS genres, r.score AS moodScore ");
+            cypher.append("ORDER BY r.score DESC, m.avgRating DESC ");
+        } else if (hasQuery) {
+            cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
+            cypher.append("YIELD node AS m, score AS ftScore ");
+            cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
+            cypher.append("RETURN m, collect(DISTINCT g) AS genres, null AS moodScore ");
+            cypher.append("ORDER BY ftScore DESC, m.avgRating DESC ");
+        } else if (hasGenres) {
+            cypher.append("MATCH (m:Movie)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres ");
+            cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g2:Genre) ");
+            cypher.append("RETURN m, collect(DISTINCT g2) AS genres, null AS moodScore ");
+            cypher.append("ORDER BY m.avgRating DESC ");
+        } else if (hasMood) {
+            cypher.append("MATCH (m:Movie)-[r:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
+            cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
+            cypher.append("RETURN m, collect(DISTINCT g) AS genres, r.score AS moodScore ");
+            cypher.append("ORDER BY r.score DESC, m.avgRating DESC ");
+        } else {
+            cypher.append("MATCH (m:Movie) ");
+            cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
+            cypher.append("RETURN m, collect(DISTINCT g) AS genres, null AS moodScore ");
+            cypher.append("ORDER BY m.avgRating DESC ");
+        }
+
+        cypher.append("SKIP $skip LIMIT $limit");
+        return cypher.toString();
+    }
+
+    private String buildAiCountQuery(boolean hasMood, boolean hasQuery, boolean hasGenres) {
+        StringBuilder cypher = new StringBuilder();
+
+        if (hasQuery && hasMood && hasGenres) {
+            cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
+            cypher.append("YIELD node AS m ");
+            cypher.append("MATCH (m)-[:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
+            cypher.append("MATCH (m)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres ");
+        } else if (hasQuery && hasMood) {
+            cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
+            cypher.append("YIELD node AS m ");
+            cypher.append("MATCH (m)-[:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
+        } else if (hasQuery && hasGenres) {
+            cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
+            cypher.append("YIELD node AS m ");
+            cypher.append("MATCH (m)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres ");
+        } else if (hasMood && hasGenres) {
+            cypher.append("MATCH (m:Movie)-[:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
+            cypher.append("MATCH (m)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres ");
+        } else if (hasQuery) {
+            cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
+            cypher.append("YIELD node AS m ");
+        } else if (hasGenres) {
+            cypher.append("MATCH (m:Movie)-[:HAS_GENRE]->(g:Genre) WHERE g.name IN $genres ");
+        } else if (hasMood) {
+            cypher.append("MATCH (m:Movie)-[:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
+        } else {
+            cypher.append("MATCH (m:Movie) ");
+        }
+
+        cypher.append("RETURN count(DISTINCT m) AS count");
+        return cypher.toString();
+    }
+
+    private String buildAiCacheKey(String mood, List<String> searchTerms, List<String> genres, int page) {
+        String termsStr = searchTerms != null ? String.join(",", searchTerms).toLowerCase() : "";
+        String genresStr = genres != null ? String.join(",", genres).toLowerCase() : "";
+        return String.format("ai-result:%s:%s:%s:%d",
+                mood != null ? mood.toLowerCase() : "all",
+                termsStr, genresStr, page);
+    }
+
     private String buildCacheKey(String mood, String query, int page) {
         return String.format("search:%s:%s:%d",
                 mood != null ? mood.toLowerCase() : "all",

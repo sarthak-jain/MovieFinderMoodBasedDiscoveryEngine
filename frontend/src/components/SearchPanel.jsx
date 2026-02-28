@@ -20,6 +20,7 @@ function SearchPanel({ onSearch, loading }) {
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const [aiMode, setAiMode] = useState(false);
   const debounceRef = useRef(null);
   const containerRef = useRef(null);
 
@@ -48,7 +49,7 @@ function SearchPanel({ onSearch, loading }) {
   const handleSuggestionClick = (suggestion) => {
     setQuery(suggestion.title);
     setShowSuggestions(false);
-    onSearch(selectedMood, suggestion.title);
+    onSearch(selectedMood, suggestion.title, false);
   };
 
   const handleKeyDown = (e) => {
@@ -101,18 +102,19 @@ function SearchPanel({ onSearch, loading }) {
   const handleMoodClick = (moodName) => {
     const newMood = selectedMood === moodName ? null : moodName;
     setSelectedMood(newMood);
-    onSearch(newMood, query);
+    onSearch(newMood, query, false);
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    onSearch(selectedMood, query);
+    setShowSuggestions(false);
+    onSearch(selectedMood, query, aiMode);
   };
 
   return (
     <div style={styles.container}>
       <h2 style={styles.heading}>How are you feeling?</h2>
-      <p style={styles.subheading}>Pick a mood or search by title</p>
+      <p style={styles.subheading}>Pick a mood, search by title, or try AI-powered natural language search</p>
 
       <div style={styles.moodGrid}>
         {moods.map(mood => (
@@ -132,15 +134,29 @@ function SearchPanel({ onSearch, loading }) {
       </div>
 
       <form onSubmit={handleSubmit} style={styles.searchForm}>
+        <button
+          type="button"
+          onClick={() => setAiMode(!aiMode)}
+          style={{
+            ...styles.aiToggle,
+            ...(aiMode ? styles.aiToggleActive : {}),
+          }}
+          title={aiMode ? 'AI search enabled — describe what you want' : 'Click to enable AI-powered search'}
+        >
+          {'\u{1F9E0}'} AI
+        </button>
         <div ref={containerRef} style={styles.inputWrapper}>
           <input
             type="text"
             value={query}
             onChange={handleQueryChange}
             onKeyDown={handleKeyDown}
-            onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
-            placeholder="Search by title..."
-            style={styles.searchInput}
+            onFocus={() => suggestions.length > 0 && !aiMode && setShowSuggestions(true)}
+            placeholder={aiMode ? 'Describe what you want... e.g. "scary movies for halloween"' : 'Search by title...'}
+            style={{
+              ...styles.searchInput,
+              ...(aiMode ? styles.searchInputAi : {}),
+            }}
             autoComplete="off"
           />
           {showSuggestions && suggestions.length > 0 && (
@@ -272,6 +288,29 @@ const styles = {
     color: '#5a6480',
     fontSize: '0.8rem',
     fontFamily: 'Inter, sans-serif',
+  },
+  aiToggle: {
+    padding: '12px 14px',
+    background: '#16213e',
+    border: '1px solid #2a2a4a',
+    borderRadius: '12px',
+    color: '#8892b0',
+    fontSize: '0.85rem',
+    fontWeight: 600,
+    cursor: 'pointer',
+    fontFamily: 'Inter, sans-serif',
+    transition: 'all 0.2s ease',
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
+  },
+  aiToggleActive: {
+    background: 'rgba(224, 64, 251, 0.15)',
+    borderColor: '#e040fb',
+    color: '#e040fb',
+    boxShadow: '0 0 12px rgba(224, 64, 251, 0.3)',
+  },
+  searchInputAi: {
+    borderColor: '#e040fb55',
   },
   searchButton: {
     padding: '12px 28px',

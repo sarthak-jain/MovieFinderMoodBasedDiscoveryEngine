@@ -10,6 +10,7 @@ public class WorkflowStep {
 
     public enum StepType {
         API_GATEWAY,
+        AI_QUERY_PARSER,
         CACHE_CHECK,
         CACHE_WRITE,
         GRAPH_DB_QUERY,
@@ -51,6 +52,20 @@ public class WorkflowStep {
         step.name = "API Gateway";
         step.detail = route;
         step.durationMs = durationMs;
+        return step;
+    }
+
+    public static WorkflowStep aiQueryParser(String traceId, int stepNumber, String input, String parsedOutput, long durationMs) {
+        WorkflowStep step = new WorkflowStep();
+        step.traceId = traceId;
+        step.stepNumber = stepNumber;
+        step.type = StepType.AI_QUERY_PARSER;
+        step.name = "AI Query Parser";
+        step.detail = String.format("Claude LLM parsed \"%s\" → %s", input, parsedOutput);
+        step.durationMs = durationMs;
+        step.metadata = new LinkedHashMap<>();
+        step.metadata.put("Input", input);
+        step.metadata.put("Model", "claude-haiku-4.5");
         return step;
     }
 
