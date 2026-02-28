@@ -5,6 +5,12 @@ spring:
     authentication:
       username: ${NEO4J_USERNAME}
       password: ${NEO4J_PASSWORD}
+    pool:
+      max-connection-lifetime: 30m       # recycle connections before they go stale
+      connection-acquisition-timeout: 30s
+      max-connection-pool-size: 50
+      idle-time-before-connection-test: 1m  # test idle connections before reuse
+      log-leaked-sessions: true
 
   data:
     redis:
