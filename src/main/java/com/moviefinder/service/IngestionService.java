@@ -24,6 +24,8 @@ public class IngestionService {
 
     @EventListener(ApplicationReadyEvent.class)
     public void seedDataOnStartup() {
+        ensureIndexes();
+
         try (Session session = neo4jDriver.session()) {
             // Check if data already exists
             var result = session.run("MATCH (m:Movie) RETURN count(m) as count");
@@ -42,6 +44,20 @@ public class IngestionService {
         seedMovies();
         seedRelationships();
         log.info("Database seeding complete!");
+    }
+
+    public void ensureIndexes() {
+        log.info("Ensuring Neo4j indexes and constraints...");
+        try (Session session = neo4jDriver.session()) {
+            session.run("CREATE CONSTRAINT movie_tmdbId_unique IF NOT EXISTS FOR (m:Movie) REQUIRE m.tmdbId IS UNIQUE");
+            session.run("CREATE FULLTEXT INDEX movie_title_fulltext IF NOT EXISTS FOR (n:Movie) ON EACH [n.title]");
+            session.run("CREATE INDEX movie_rating_idx IF NOT EXISTS FOR (m:Movie) ON (m.avgRating)");
+            session.run("CREATE CONSTRAINT genre_name_unique IF NOT EXISTS FOR (g:Genre) REQUIRE g.name IS UNIQUE");
+            session.run("CREATE CONSTRAINT mood_name_unique IF NOT EXISTS FOR (m:Mood) REQUIRE m.name IS UNIQUE");
+            log.info("Neo4j indexes and constraints ensured");
+        } catch (Exception e) {
+            log.warn("Failed to create some indexes (may already exist): {}", e.getMessage());
+        }
     }
 
     private void seedMoods() {
@@ -71,8 +87,9 @@ public class IngestionService {
         try (Session session = neo4jDriver.session()) {
             List<String> genres = List.of(
                     "Action", "Adventure", "Animation", "Comedy", "Crime",
-                    "Documentary", "Drama", "Fantasy", "Horror", "Mystery",
-                    "Romance", "Sci-Fi", "Thriller", "War", "Western"
+                    "Documentary", "Drama", "Family", "Fantasy", "History",
+                    "Horror", "Music", "Mystery", "Romance", "Sci-Fi",
+                    "TV Movie", "Thriller", "War", "Western"
             );
 
             for (String genre : genres) {

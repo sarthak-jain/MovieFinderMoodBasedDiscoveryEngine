@@ -37,6 +37,9 @@ moviefinder:
     poster-ttl: 604800      # 7 days
   ingestion:
     batch-size: 500
+    discover-delay-ms: 250
+    min-mood-score: 0.25
+    max-similar: 20
 
 management:
   endpoints:

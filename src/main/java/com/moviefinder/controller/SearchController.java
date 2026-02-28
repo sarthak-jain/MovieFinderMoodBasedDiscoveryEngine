@@ -44,14 +44,15 @@ public class SearchController {
 
         List<Map<String, Object>> suggestions = new ArrayList<>();
         try (Session session = neo4jDriver.session()) {
+            String queryParam = q.trim() + "*";
             String cypher = """
-                    MATCH (m:Movie)
-                    WHERE toLower(m.title) CONTAINS toLower($q)
+                    CALL db.index.fulltext.queryNodes('movie_title_fulltext', $q)
+                    YIELD node AS m, score
                     RETURN m.title AS title, m.year AS year, id(m) AS id
-                    ORDER BY m.avgRating DESC
+                    ORDER BY score DESC, m.avgRating DESC
                     LIMIT 8
                     """;
-            var result = session.run(cypher, Values.value(Map.of("q", q.trim())));
+            var result = session.run(cypher, Values.value(Map.of("q", queryParam)));
             while (result.hasNext()) {
                 var record = result.next();
                 suggestions.add(Map.of(

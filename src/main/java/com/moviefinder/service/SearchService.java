@@ -77,7 +77,7 @@ public class SearchService {
                 params.put("mood", mood.toLowerCase());
             }
             if (query != null && !query.isEmpty()) {
-                params.put("query", "(?i).*" + query + ".*");
+                params.put("query", query.trim() + "*");
             }
 
             var result = session.run(cypherQuery, Values.value(params));
@@ -140,25 +140,37 @@ public class SearchService {
     }
 
     private String buildCypherQuery(String mood, String query) {
+        boolean hasMood = mood != null && !mood.isEmpty();
+        boolean hasQuery = query != null && !query.isEmpty();
+
         StringBuilder cypher = new StringBuilder();
 
-        if (mood != null && !mood.isEmpty()) {
+        if (hasQuery && hasMood) {
+            // Full-text search + mood filter
+            cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
+            cypher.append("YIELD node AS m, score AS ftScore ");
+            cypher.append("MATCH (m)-[r:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
+            cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
+            cypher.append("RETURN m, collect(DISTINCT g) AS genres, r.score AS moodScore ");
+            cypher.append("ORDER BY ftScore DESC, r.score DESC ");
+        } else if (hasQuery) {
+            // Full-text search only
+            cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
+            cypher.append("YIELD node AS m, score AS ftScore ");
+            cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
+            cypher.append("RETURN m, collect(DISTINCT g) AS genres, null AS moodScore ");
+            cypher.append("ORDER BY ftScore DESC, m.avgRating DESC ");
+        } else if (hasMood) {
+            // Mood-only search
             cypher.append("MATCH (m:Movie)-[r:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
-        } else {
-            cypher.append("MATCH (m:Movie) ");
-        }
-
-        if (query != null && !query.isEmpty()) {
-            cypher.append("WHERE m.title =~ $query ");
-        }
-
-        cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
-
-        if (mood != null && !mood.isEmpty()) {
-            cypher.append("RETURN m, collect(DISTINCT g) as genres, r.score as moodScore ");
+            cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
+            cypher.append("RETURN m, collect(DISTINCT g) AS genres, r.score AS moodScore ");
             cypher.append("ORDER BY r.score DESC, m.avgRating DESC ");
         } else {
-            cypher.append("RETURN m, collect(DISTINCT g) as genres, null as moodScore ");
+            // Browse all
+            cypher.append("MATCH (m:Movie) ");
+            cypher.append("OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) ");
+            cypher.append("RETURN m, collect(DISTINCT g) AS genres, null AS moodScore ");
             cypher.append("ORDER BY m.avgRating DESC ");
         }
 
@@ -167,19 +179,25 @@ public class SearchService {
     }
 
     private String buildCountQuery(String mood, String query) {
+        boolean hasMood = mood != null && !mood.isEmpty();
+        boolean hasQuery = query != null && !query.isEmpty();
+
         StringBuilder cypher = new StringBuilder();
 
-        if (mood != null && !mood.isEmpty()) {
+        if (hasQuery && hasMood) {
+            cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
+            cypher.append("YIELD node AS m ");
+            cypher.append("MATCH (m)-[r:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
+        } else if (hasQuery) {
+            cypher.append("CALL db.index.fulltext.queryNodes('movie_title_fulltext', $query) ");
+            cypher.append("YIELD node AS m ");
+        } else if (hasMood) {
             cypher.append("MATCH (m:Movie)-[r:MATCHES_MOOD]->(mood:Mood {name: $mood}) ");
         } else {
             cypher.append("MATCH (m:Movie) ");
         }
 
-        if (query != null && !query.isEmpty()) {
-            cypher.append("WHERE m.title =~ $query ");
-        }
-
-        cypher.append("RETURN count(m) as count");
+        cypher.append("RETURN count(m) AS count");
         return cypher.toString();
     }
 
