@@ -57,6 +57,29 @@ public class BulkIngestionService {
     }
 
     @Async
+    public void startSimilarOnly() {
+        if (isRunning()) {
+            log.warn("Ingestion already in progress, ignoring request");
+            return;
+        }
+
+        log.info("Starting SIMILAR_TO computation only...");
+        Instant startTime = Instant.now();
+
+        try {
+            status.set(new IngestionStatus(Phase.COMPUTING_SIMILAR, 0, 0, 0, 0, null, startTime, null));
+            int similarEdges = computeSimilarTo();
+            Instant endTime = Instant.now();
+            status.set(new IngestionStatus(Phase.COMPLETE, 0, 0, 0, 0, null, startTime, endTime));
+            log.info("SIMILAR_TO computation complete: {} edges in {}s", similarEdges,
+                    (endTime.toEpochMilli() - startTime.toEpochMilli()) / 1000);
+        } catch (Exception e) {
+            log.error("SIMILAR_TO computation failed", e);
+            status.set(new IngestionStatus(Phase.FAILED, 0, 0, 0, 0, e.getMessage(), startTime, Instant.now()));
+        }
+    }
+
+    @Async
     public void startIngestion(int pages) {
         if (isRunning()) {
             log.warn("Ingestion already in progress, ignoring request");
@@ -248,29 +271,52 @@ public class BulkIngestionService {
     }
 
     private int computeSimilarTo() {
-        log.info("Computing SIMILAR_TO relationships (max {} per movie)...", maxSimilar);
+        log.info("Computing SIMILAR_TO relationships (max {} per movie) in batches...", maxSimilar);
+
+        // Get all movie tmdbIds to process in batches
+        List<Long> allTmdbIds;
+        try (Session session = neo4jDriver.session()) {
+            var result = session.run("MATCH (m:Movie) RETURN m.tmdbId AS tmdbId ORDER BY m.tmdbId");
+            allTmdbIds = new ArrayList<>();
+            while (result.hasNext()) {
+                allTmdbIds.add(result.next().get("tmdbId").asLong());
+            }
+        }
 
         String cypher = """
-                MATCH (m1:Movie)-[:HAS_GENRE]->(g:Genre)<-[:HAS_GENRE]-(m2:Movie)
+                UNWIND $tmdbIds AS id
+                MATCH (m1:Movie {tmdbId: id})-[:HAS_GENRE]->(g:Genre)<-[:HAS_GENRE]-(m2:Movie)
                 WHERE m1.tmdbId < m2.tmdbId
                 WITH m1, m2, count(g) AS shared
                 WHERE shared >= 2
                 WITH m1, m2, toFloat(shared) / 5.0 AS score
                 ORDER BY m1.tmdbId, score DESC
-                WITH m1, collect({m2: m2, score: score})[0..$maxSimilar] AS top
-                UNWIND top AS pair
-                MERGE (m1)-[r:SIMILAR_TO]->(pair.m2)
-                SET r.score = pair.score
+                WITH m1, collect(m2)[0..$maxSimilar] AS topMovies, collect(score)[0..$maxSimilar] AS topScores
+                WITH m1, topMovies, topScores, range(0, size(topMovies)-1) AS idxs
+                UNWIND idxs AS idx
+                WITH m1, topMovies[idx] AS m2, topScores[idx] AS score
+                MERGE (m1)-[r:SIMILAR_TO]->(m2)
+                SET r.score = score
                 RETURN count(r) AS edgeCount
                 """;
 
-        try (Session session = neo4jDriver.session()) {
-            var result = session.run(cypher, Values.value(Map.of("maxSimilar", maxSimilar)));
-            if (result.hasNext()) {
-                return result.next().get("edgeCount").asInt();
+        int totalEdges = 0;
+        int similarBatchSize = 200;
+        for (int i = 0; i < allTmdbIds.size(); i += similarBatchSize) {
+            List<Long> batch = allTmdbIds.subList(i, Math.min(i + similarBatchSize, allTmdbIds.size()));
+            try (Session session = neo4jDriver.session()) {
+                var result = session.run(cypher, Values.value(Map.of("tmdbIds", batch, "maxSimilar", maxSimilar)));
+                if (result.hasNext()) {
+                    totalEdges += result.next().get("edgeCount").asInt();
+                }
+            }
+            if ((i / similarBatchSize) % 10 == 0) {
+                log.info("SIMILAR_TO progress: {}/{} movies, {} edges so far",
+                        Math.min(i + similarBatchSize, allTmdbIds.size()), allTmdbIds.size(), totalEdges);
             }
         }
-        return 0;
+
+        return totalEdges;
     }
 
     private void writeBatches(List<Map<String, Object>> items, String cypher, String label) {

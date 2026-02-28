@@ -56,6 +56,19 @@ public class AdminController {
         return ResponseEntity.ok(bulkIngestionService.getStatus());
     }
 
+    @PostMapping("/ingest/similar")
+    public ResponseEntity<Map<String, Object>> computeSimilar() {
+        if (bulkIngestionService.isRunning()) {
+            return ResponseEntity.status(409).body(Map.of(
+                    "error", "Ingestion already in progress"
+            ));
+        }
+        bulkIngestionService.startSimilarOnly();
+        return ResponseEntity.accepted().body(Map.of(
+                "message", "SIMILAR_TO computation started"
+        ));
+    }
+
     @PostMapping("/indexes")
     public ResponseEntity<Map<String, String>> createIndexes() {
         ingestionService.ensureIndexes();
