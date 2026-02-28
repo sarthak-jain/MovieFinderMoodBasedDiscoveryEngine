@@ -36,30 +36,32 @@ public class SearchService {
     }
 
     @SuppressWarnings("unchecked")
-    public SearchResult search(String mood, String query, int page) {
+    public SearchResult search(String mood, String query, int page, Long selectedId) {
         WorkflowTracer.Trace trace = workflowTracer.startTrace("GET",
                 "/api/search?mood=" + mood + "&query=" + (query != null ? query : ""));
 
         // Step 1: API Gateway routing
         trace.emitApiGateway("Routing GET /api/search → SearchService.search()");
 
-        // Step 2: Check cache
+        // Step 2: Check cache (skip cache when selectedId is present — pin-to-top results are unique)
         String cacheKey = buildCacheKey(mood, query, page);
-        long cacheStart = System.nanoTime();
-        try {
-            Object cached = redisTemplate.opsForValue().get(cacheKey);
-            long cacheDuration = (System.nanoTime() - cacheStart) / 1_000_000;
-            if (cached != null) {
-                trace.emitCacheCheck(cacheKey, WorkflowStep.CacheStatus.HIT, cacheDuration);
-                SearchResult result = convertCachedResult(cached);
-                trace.emitResponse(200, result.getMovies().size());
-                return result;
+        if (selectedId == null) {
+            long cacheStart = System.nanoTime();
+            try {
+                Object cached = redisTemplate.opsForValue().get(cacheKey);
+                long cacheDuration = (System.nanoTime() - cacheStart) / 1_000_000;
+                if (cached != null) {
+                    trace.emitCacheCheck(cacheKey, WorkflowStep.CacheStatus.HIT, cacheDuration);
+                    SearchResult result = convertCachedResult(cached);
+                    trace.emitResponse(200, result.getMovies().size());
+                    return result;
+                }
+                trace.emitCacheCheck(cacheKey, WorkflowStep.CacheStatus.MISS, cacheDuration);
+            } catch (Exception e) {
+                long cacheDuration = (System.nanoTime() - cacheStart) / 1_000_000;
+                trace.emitCacheCheck(cacheKey, WorkflowStep.CacheStatus.MISS, cacheDuration);
+                log.warn("Redis cache check failed: {}", e.getMessage());
             }
-            trace.emitCacheCheck(cacheKey, WorkflowStep.CacheStatus.MISS, cacheDuration);
-        } catch (Exception e) {
-            long cacheDuration = (System.nanoTime() - cacheStart) / 1_000_000;
-            trace.emitCacheCheck(cacheKey, WorkflowStep.CacheStatus.MISS, cacheDuration);
-            log.warn("Redis cache check failed: {}", e.getMessage());
         }
 
         // Step 3: Graph DB query
@@ -87,6 +89,11 @@ public class SearchService {
                 movies.add(mapRecordToMovie(record));
             }
 
+            // If selectedId provided, pin that movie to the top
+            if (selectedId != null && page == 0) {
+                pinSelectedMovie(session, movies, selectedId);
+            }
+
             // Get total count
             String countQuery = buildCountQuery(mood, query);
             var countResult = session.run(countQuery, Values.value(params));
@@ -108,22 +115,28 @@ public class SearchService {
         trace.emitCircuitBreaker(metadataService.getCircuitBreakerState().name(), 0);
         trace.emitRateLimit(metadataService.getRateLimiterRemaining(), 30);
 
-        // Step 5: Ranking
+        // Step 5: Ranking (skip re-ranking when selectedId is present — keep pinned movie at top)
         long rankStart = System.nanoTime();
-        rankMovies(movies, mood);
+        if (selectedId == null) {
+            rankMovies(movies, mood);
+        }
         long rankDuration = (System.nanoTime() - rankStart) / 1_000_000;
-        String rankFormula = String.format("Applying weighted scoring: mood_relevance × 0.6 + normalized_rating × 0.4, sorting %d results", movies.size());
+        String rankFormula = selectedId != null
+                ? String.format("Selected movie pinned to top, returning %d results in relevance order", movies.size())
+                : String.format("Applying weighted scoring: mood_relevance × 0.6 + normalized_rating × 0.4, sorting %d results", movies.size());
         trace.emitRanking(rankFormula, rankDuration);
 
         // Step 6: Cache the results
         SearchResult searchResult = new SearchResult(movies, totalResults, page, mood, query, trace.elapsedMs());
-        long cacheWriteStart = System.nanoTime();
-        try {
-            redisTemplate.opsForValue().set(cacheKey, searchResult, 5, TimeUnit.MINUTES);
-            long cacheWriteDuration = (System.nanoTime() - cacheWriteStart) / 1_000_000;
-            trace.emitCacheWrite(cacheKey, "5min", cacheWriteDuration);
-        } catch (Exception e) {
-            log.warn("Redis cache write failed: {}", e.getMessage());
+        if (selectedId == null) {
+            long cacheWriteStart = System.nanoTime();
+            try {
+                redisTemplate.opsForValue().set(cacheKey, searchResult, 5, TimeUnit.MINUTES);
+                long cacheWriteDuration = (System.nanoTime() - cacheWriteStart) / 1_000_000;
+                trace.emitCacheWrite(cacheKey, "5min", cacheWriteDuration);
+            } catch (Exception e) {
+                log.warn("Redis cache write failed: {}", e.getMessage());
+            }
         }
 
         // Step 7: Response
@@ -415,6 +428,34 @@ public class SearchService {
         }
 
         return movie;
+    }
+
+    private void pinSelectedMovie(Session session, List<Movie> movies, Long selectedId) {
+        // Check if the selected movie is already in the results
+        int existingIndex = -1;
+        for (int i = 0; i < movies.size(); i++) {
+            if (movies.get(i).getId().equals(selectedId)) {
+                existingIndex = i;
+                break;
+            }
+        }
+
+        if (existingIndex > 0) {
+            // Move it to the front
+            Movie selected = movies.remove(existingIndex);
+            movies.add(0, selected);
+        } else if (existingIndex == -1) {
+            // Not in results — fetch it by ID and prepend
+            String cypher = "MATCH (m:Movie) WHERE id(m) = $id " +
+                    "OPTIONAL MATCH (m)-[:HAS_GENRE]->(g:Genre) " +
+                    "RETURN m, collect(DISTINCT g) AS genres, null AS moodScore";
+            var result = session.run(cypher, Values.value(Map.of("id", selectedId)));
+            if (result.hasNext()) {
+                Movie selected = mapRecordToMovie(result.next());
+                movies.add(0, selected);
+            }
+        }
+        // existingIndex == 0 means it's already first — do nothing
     }
 
     private void rankMovies(List<Movie> movies, String mood) {

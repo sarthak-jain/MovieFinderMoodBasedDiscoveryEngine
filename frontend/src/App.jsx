@@ -96,7 +96,7 @@ function App() {
   const [isAiSearch, setIsAiSearch] = useState(false);
   const { events, clearEvents, connected } = useWorkflowStream();
 
-  const doSearch = useCallback(async (mood, query, page) => {
+  const doSearch = useCallback(async (mood, query, page, selectedId) => {
     setLoading(true);
     setSelectedMovie(null);
     clearEvents();
@@ -105,6 +105,7 @@ function App() {
       const params = new URLSearchParams();
       if (mood) params.set('mood', mood);
       if (query) params.set('query', query);
+      if (selectedId) params.set('selectedId', selectedId);
       params.set('page', page);
 
       const response = await fetch(`${API_BASE}/search?${params}`);
@@ -166,16 +167,16 @@ function App() {
     }
   }, [clearEvents, doSearch]);
 
-  const handleSearch = useCallback((mood, query, useAi) => {
+  const handleSearch = useCallback((mood, query, useAi, selectedId) => {
     setCurrentPage(0);
-    setLastSearch({ mood, query, useAi });
+    setLastSearch({ mood, query, useAi, selectedId });
     setAiInterpretation(null);
     setIsAiSearch(false);
 
     if (useAi && query && query.trim()) {
       doAiSearch(query, 0);
     } else {
-      doSearch(mood, query, 0);
+      doSearch(mood, query, 0, selectedId);
     }
   }, [doSearch, doAiSearch]);
 
@@ -184,7 +185,7 @@ function App() {
     if (lastSearch.useAi && lastSearch.query) {
       doAiSearch(lastSearch.query, page);
     } else {
-      doSearch(lastSearch.mood, lastSearch.query, page);
+      doSearch(lastSearch.mood, lastSearch.query, page, null);
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [doSearch, doAiSearch, lastSearch]);

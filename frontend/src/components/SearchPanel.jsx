@@ -49,7 +49,7 @@ function SearchPanel({ onSearch, loading }) {
   const handleSuggestionClick = (suggestion) => {
     setQuery(suggestion.title);
     setShowSuggestions(false);
-    onSearch(selectedMood, suggestion.title, false);
+    onSearch(selectedMood, suggestion.title, false, suggestion.id);
   };
 
   const handleKeyDown = (e) => {
@@ -102,13 +102,13 @@ function SearchPanel({ onSearch, loading }) {
   const handleMoodClick = (moodName) => {
     const newMood = selectedMood === moodName ? null : moodName;
     setSelectedMood(newMood);
-    onSearch(newMood, query, false);
+    onSearch(newMood, query, false, null);
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
     setShowSuggestions(false);
-    onSearch(selectedMood, query, aiMode);
+    onSearch(selectedMood, query, aiMode, null);
   };
 
   return (

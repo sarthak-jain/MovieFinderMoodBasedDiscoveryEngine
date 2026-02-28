@@ -38,9 +38,10 @@ public class SearchController {
     public ResponseEntity<SearchResult> search(
             @RequestParam(required = false) String mood,
             @RequestParam(required = false) String query,
+            @RequestParam(required = false) Long selectedId,
             @RequestParam(defaultValue = "0") int page) {
 
-        SearchResult result = searchService.search(mood, query, page);
+        SearchResult result = searchService.search(mood, query, page, selectedId);
         return ResponseEntity.ok(result);
     }
 
