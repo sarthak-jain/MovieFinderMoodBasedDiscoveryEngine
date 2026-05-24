@@ -222,6 +222,24 @@ function App() {
 
   return (
     <div className="app">
+      <div className="disclaimer-banner">
+        <p className="disclaimer-heading">DISCLAIMER — About This Project</p>
+        <p>
+          <strong>MovieFinder is a personal portfolio project created by Sarthak Jain to demonstrate software engineering skills, including AI-powered search, real-time data processing, and web application development. It was built independently of any employer and outside of any employment relationship.</strong>
+        </p>
+        <p>
+          <strong>This site is non-commercial.</strong> It generates no revenue, displays no advertising, accepts no payments or donations, and is not offered as a product, service, or business. No commercial transactions occur on this site.
+        </p>
+        <p>
+          <strong>No affiliation.</strong> This project is not affiliated with, endorsed by, or sponsored by any movie studio, streaming service, or data provider. All trademarks and data belong to their respective owners. Data is displayed for demonstration purposes only.
+        </p>
+        <p>
+          <strong>Limited availability.</strong> This site is provided as-is for skill demonstration. It may be modified, taken offline, or have features disabled at any time without notice.
+        </p>
+        <p>
+          <strong>Contact.</strong> For inquiries about this project, please contact <strong>sarthak1891@gmail.com</strong>.
+        </p>
+      </div>
       <header className="app-header">
         <h1 className="app-title" onClick={handleLogoClick} style={{ cursor: 'pointer' }}>MovieFinder</h1>
         <span className="app-subtitle">Mood-based Discovery Engine</span>

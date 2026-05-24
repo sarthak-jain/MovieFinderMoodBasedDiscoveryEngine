@@ -36,6 +36,38 @@ body {
   min-height: 100vh;
 }
 
+/* Disclaimer Banner */
+.disclaimer-banner {
+  background: #111122;
+  border-bottom: 1px solid var(--border);
+  color: #9da8c0;
+  font-size: 0.85rem;
+  line-height: 1.7;
+  padding: 14px 24px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.disclaimer-banner p {
+  margin: 0;
+}
+
+.disclaimer-heading {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #c0cadc;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 2px !important;
+}
+
+.disclaimer-banner strong {
+  color: #c0cadc;
+  font-weight: 600;
+}
+
 /* Header */
 .app-header {
   display: flex;
